@@ -45,11 +45,11 @@ static std::unordered_map<void*, AllocationMeta> g_allocations;
     }
 
 // Utility for HIP Error Checking in void functions
-#define HIP_CHECK_VOID(status) \
+// We deliberately DO NOT return here so that cleanup sequences can continue
+#define HIP_LOG_ERROR(status, msg) \
     if (status != hipSuccess) { \
-        std::cerr << "[HIP VMM ERROR] " << hipGetErrorString(status) \
+        std::cerr << "[HIP VMM ERROR] " << msg << ": " << hipGetErrorString(status) \
                   << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
-        return; \
     }
 
 extern "C" {
@@ -201,9 +201,17 @@ void my_free(void* ptr, ssize_t size, int device, cudaStream_t stream) {
     // 1. Unmap
     // 2. Release Handle
     // 3. Free Address
-    HIP_CHECK_VOID(hipMemUnmap(ptr, meta.padded_size));
-    HIP_CHECK_VOID(hipMemRelease(meta.handle));
-    HIP_CHECK_VOID(hipMemAddressFree(ptr, meta.padded_size));
+    // CRITICAL: We must attempt to execute all three even if one fails to prevent catastrophic leaks.
+    hipError_t status;
+
+    status = hipMemUnmap(ptr, meta.padded_size);
+    HIP_LOG_ERROR(status, "hipMemUnmap failed");
+
+    status = hipMemRelease(meta.handle);
+    HIP_LOG_ERROR(status, "hipMemRelease failed");
+
+    status = hipMemAddressFree(ptr, meta.padded_size);
+    HIP_LOG_ERROR(status, "hipMemAddressFree failed");
 }
 
 } // extern "C"
