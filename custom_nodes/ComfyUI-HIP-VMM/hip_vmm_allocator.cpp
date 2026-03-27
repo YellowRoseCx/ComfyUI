@@ -4,6 +4,7 @@
 #include <mutex>
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 
 // Typedef cudaStream_t to hipStream_t so we don't need to include massive PyTorch C++ headers
 // PyTorch's change_current_allocator uses cudaStream_t in the C API footprint.
@@ -192,7 +193,11 @@ void my_free(void* ptr, ssize_t size, int device, cudaStream_t stream) {
         g_current_host_allocated -= meta.padded_size;
     } else {
         g_current_device_allocated -= meta.padded_size;
-        if (g_current_device_allocated == 0 && g_current_host_allocated == 0) {
+
+        // Reset the warning log if we drop below the VRAM limit.
+        // This ensures the user is warned during each separate massive generation spike,
+        // rather than just once during the entire ComfyUI session lifecycle.
+        if (g_fallback_active.load() && g_current_device_allocated < g_vram_limit_bytes && g_current_host_allocated == 0) {
             g_fallback_active.store(false);
         }
     }

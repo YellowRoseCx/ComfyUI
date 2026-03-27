@@ -16,10 +16,11 @@ This will generate `hip_vmm_allocator.so`.
 ## CRITICAL: How to Launch ComfyUI
 Because PyTorch locks its memory allocator extremely early in the boot cycle, you **cannot** inject custom allocators purely from Python inside a ComfyUI custom node without throwing a `RuntimeError`.
 
-To use this feature, you must explicitly instruct PyTorch to use the allocator via environment variables **before** starting ComfyUI:
+To use this feature, you must explicitly instruct PyTorch to use the allocator via environment variables **before** starting ComfyUI. The path must be absolute to ensure `dlopen` correctly loads it:
 
 ```bash
-export PYTORCH_CUDA_ALLOC_CONF="backend:pluggable,allocator:custom_nodes/ComfyUI-HIP-VMM/hip_vmm_allocator.so"
+# Example assuming you launch from the root of the ComfyUI repository
+export PYTORCH_CUDA_ALLOC_CONF="backend:pluggable,allocator:$PWD/custom_nodes/ComfyUI-HIP-VMM/hip_vmm_allocator.so"
 python main.py
 ```
 
