@@ -36,9 +36,10 @@ class ComfyHIPVMMNode:
         so_path = os.path.join(os.path.dirname(__file__), 'hip_vmm_allocator.so')
         try:
             lib = ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
+            lib.update_allocator_limits.argtypes = [ctypes.c_size_t, ctypes.c_size_t]
             lib.update_allocator_limits(vram_limit_mb, ram_limit_mb)
         except Exception as e:
-            print(f"[HIP VMM WARNING] Cannot update limits. Allocator was not successfully loaded. {e}")
+            print(f"[HIP VMM WARNING] Cannot update limits. Make sure you compiled the library and set PYTORCH_CUDA_ALLOC_CONF. {e}")
         return ()
 
 # A dictionary that contains all nodes you want to export with their names
