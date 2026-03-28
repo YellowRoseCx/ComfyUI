@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
-#include <vector>
 #include <algorithm> // for std::max
 
 // Typedef cudaStream_t to hipStream_t so we don't need to include massive PyTorch C++ headers
@@ -30,15 +29,9 @@ static std::atomic<bool> g_fallback_active(false);
 static std::mutex g_alloc_mutex;
 
 // We need to keep track of allocation metadata to cleanly unmap and release
-struct AllocationChunk {
-    hipMemGenericAllocationHandle_t handle;
-    size_t offset;
-    size_t size;
-};
-
 struct AllocationMeta {
     size_t padded_size;
-    std::vector<AllocationChunk> chunks;
+    hipMemGenericAllocationHandle_t handle;
     bool is_host_fallback;
 };
 
@@ -123,24 +116,23 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     void* ptr = nullptr;
     HIP_CHECK(hipMemAddressReserve(&ptr, padded_size, max_granularity, nullptr, 0));
 
-    std::vector<AllocationChunk> chunks;
+    hipMemGenericAllocationHandle_t handle;
     bool is_host_fallback = false;
 
     // 4. Attempt Device Allocation
-    if (g_vram_limit_bytes == 0 || (g_current_device_allocated + padded_size <= g_vram_limit_bytes)) {
-        hipMemGenericAllocationHandle_t dev_handle;
+    if (g_vram_limit_bytes > 0 && (g_current_device_allocated + padded_size > g_vram_limit_bytes)) {
+        // Exceeds VRAM limit natively, skip directly to fallback
+        status = hipErrorOutOfMemory;
+    } else {
         // AMD ROCm Official Docs: hipMemCreate physical handle must be padded_size * 2
         // to provide adequate internal page alignment slack, preventing unspecified launch failures
-        status = hipMemCreate(&dev_handle, padded_size * 2, &device_prop, 0);
-        if (status == hipSuccess) {
-            chunks.push_back({dev_handle, 0, padded_size});
-        }
+        status = hipMemCreate(&handle, padded_size * 2, &device_prop, 0);
     }
 
-    // 5. The Fallback (System RAM mapped to GPU Virtual Address via Slicing)
-    if (chunks.empty()) {
+    // 5. The Fallback (System RAM mapped to GPU Virtual Address)
+    if (status != hipSuccess) {
         if (!g_fallback_active.exchange(true)) {
-             std::cout << "[HIP VMM WARN] VRAM limit reached or allocation failed natively, falling back to Fragmented Host RAM over PCIe" << std::endl;
+             std::cout << "[HIP VMM WARN] VRAM limit reached or Device allocation failed, falling back to Pinned Host RAM over PCIe" << std::endl;
         }
 
         // Verify Host allocation doesn't exceed user RAM limit
@@ -151,60 +143,26 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
             return nullptr;
         }
 
-        is_host_fallback = true;
+        // Create the physical memory in Pinned System RAM using the precise Host VMM properties
+        // AMD ROCm Official Docs: physical handle must be padded_size * 2
+        status = hipMemCreate(&handle, padded_size * 2, &host_prop, 0);
+        if (status != hipSuccess) {
+            std::cerr << "\n========================================\n";
+            std::cerr << "[HIP VMM FATAL] Host memory allocation failed: " << hipGetErrorString(status) << "\n";
+            std::cerr << "[HIP VMM DIAGNOSTIC] Attempted to lock a contiguous " << (padded_size / (1024.0 * 1024.0)) << " MB block in System RAM.\n";
+            std::cerr << "[HIP VMM DIAGNOSTIC] Current VMM Host Tracker: " << (g_current_host_allocated / (1024.0 * 1024.0)) << " MB.\n";
+            std::cerr << "--> WHY DID THIS CRASH?\n";
+            std::cerr << "Linux OS memory fragmentation prevents hipMemCreate from finding a perfect, physically unbroken block of this size in your DDR4.\n";
+            std::cerr << "Even if you have 30GB+ of RAM free, an OS that has been running for hours rarely has a perfectly contiguous multi-gigabyte segment remaining.\n";
+            std::cerr << "We cannot slice this allocation to bypass fragmentation because PyTorch Triton/MIOPEN kernels fatally crash on RDNA2 when accessing virtual addresses backed by disjointed physical handles.\n";
+            std::cerr << "SOLUTION: You must rely on PyTorch expandable_segments:True or native comfy_aimdo VRAM offloading to survive this specific payload.\n";
+            std::cerr << "========================================\n" << std::endl;
 
-        // VMM SLICING: Linux physical memory fragmentation prevents hipMemCreate from
-        // allocating large contiguous pages (e.g., 3GB) in System RAM. If we ask for 3GB,
-        // the kernel rejects it with `hipErrorOutOfMemory` even if 30GB is collectively free.
-        // We slice the request into smaller chunks and map them seamlessly.
-
-        // 256MB chunk size (must be a multiple of max_granularity)
-        size_t slice_size = std::max((size_t)(256 * 1024 * 1024), max_granularity);
-        slice_size = ((slice_size + max_granularity - 1) / max_granularity) * max_granularity;
-
-        size_t allocated_so_far = 0;
-        bool fallback_failed = false;
-
-        while (allocated_so_far < padded_size) {
-            size_t current_slice = std::min(slice_size, padded_size - allocated_so_far);
-            hipMemGenericAllocationHandle_t host_handle;
-
-            // AMD ROCm Official Docs: physical handle must be slice * 2
-            status = hipMemCreate(&host_handle, current_slice * 2, &host_prop, 0);
-
-            // If even 256MB fails, iteratively halve the slice size down to the max_granularity limit
-            while (status != hipSuccess && current_slice > max_granularity) {
-                current_slice = std::max(current_slice / 2, max_granularity);
-                current_slice = ((current_slice + max_granularity - 1) / max_granularity) * max_granularity;
-                status = hipMemCreate(&host_handle, current_slice * 2, &host_prop, 0);
-            }
-
-            if (status != hipSuccess) {
-                std::cerr << "\n========================================\n";
-                std::cerr << "[HIP VMM FATAL] Host fragmented memory allocation failed: " << hipGetErrorString(status) << "\n";
-                std::cerr << "[HIP VMM DIAGNOSTIC] Failed at chunk " << chunks.size() << " (" << (current_slice / (1024.0 * 1024.0)) << " MB).\n";
-                std::cerr << "[HIP VMM DIAGNOSTIC] Current VMM Host Tracker: " << (g_current_host_allocated / (1024.0 * 1024.0)) << " MB.\n";
-                std::cerr << "--> WHY DID THIS CRASH?\n";
-                std::cerr << "Linux limits the amount of 'pinned' (page-locked) RAM a user can request to prevent freezing the OS.\n";
-                std::cerr << "Your current limit ('ulimit -l') is too low to absorb this PyTorch fallback allocation request.\n";
-                std::cerr << "SOLUTION: Run 'ulimit -l unlimited' (or edit /etc/security/limits.conf) before launching ComfyUI.\n";
-                std::cerr << "========================================\n" << std::endl;
-                fallback_failed = true;
-                break;
-            }
-
-            chunks.push_back({host_handle, allocated_so_far, current_slice});
-            allocated_so_far += current_slice;
-        }
-
-        if (fallback_failed) {
-            for (const auto& chunk : chunks) {
-                hipMemRelease(chunk.handle);
-            }
             hipMemAddressFree(ptr, padded_size);
             return nullptr;
         }
 
+        is_host_fallback = true;
     } else {
         // Device allocation succeeded, we are not in fallback for this allocation
         if (g_fallback_active.load() && g_current_device_allocated == 0) {
@@ -213,23 +171,16 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
         }
     }
 
-    // 6. Map Physical Memory Chunks to Virtual Address dynamically
-    for (const auto& chunk : chunks) {
-        // Compute absolute offset mapped pointer
-        void* mapped_ptr = static_cast<char*>(ptr) + chunk.offset;
-        status = hipMemMap(mapped_ptr, chunk.size, 0, chunk.handle, 0);
-
-        if (status != hipSuccess) {
-            std::cerr << "[HIP VMM ERROR] hipMemMap failed on slice size " << chunk.size << ": " << hipGetErrorString(status) << std::endl;
-            for (const auto& c : chunks) {
-                hipMemRelease(c.handle); // Just release handles; we cannot partially unmap what wasn't successfully mapped
-            }
-            hipMemAddressFree(ptr, padded_size);
-            return nullptr;
-        }
+    // 6. Map Physical Memory to Virtual Address
+    status = hipMemMap(ptr, padded_size, 0, handle, 0);
+    if (status != hipSuccess) {
+        std::cerr << "[HIP VMM ERROR] hipMemMap failed: " << hipGetErrorString(status) << std::endl;
+        hipMemRelease(handle);
+        hipMemAddressFree(ptr, padded_size);
+        return nullptr;
     }
 
-    // 7. Grant Access to the entire contiguous virtual block
+    // 7. Grant Access to the executing GPU
     hipMemAccessDesc accessDesc = {};
     accessDesc.location.type = hipMemLocationTypeDevice;
     accessDesc.location.id = device;
@@ -238,13 +189,9 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     status = hipMemSetAccess(ptr, padded_size, &accessDesc, 1);
     if (status != hipSuccess) {
         std::cerr << "[HIP VMM ERROR] hipMemSetAccess failed: " << hipGetErrorString(status) << std::endl;
-
         // Clean up
-        for (const auto& chunk : chunks) {
-            void* mapped_ptr = static_cast<char*>(ptr) + chunk.offset;
-            hipMemUnmap(mapped_ptr, chunk.size);
-            hipMemRelease(chunk.handle);
-        }
+        hipMemUnmap(ptr, padded_size);
+        hipMemRelease(handle);
         hipMemAddressFree(ptr, padded_size);
         return nullptr;
     }
@@ -259,7 +206,7 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     // Save metadata
     {
         std::lock_guard<std::mutex> lock(g_alloc_mutex);
-        g_allocations[ptr] = {padded_size, chunks, is_host_fallback};
+        g_allocations[ptr] = {padded_size, handle, is_host_fallback};
     }
 
     return ptr;
@@ -299,21 +246,18 @@ void my_free(void* ptr, ssize_t size, int device, cudaStream_t stream) {
     }
 
     // VMM Cleanup strict order:
-    // 1. Unmap individual chunks
-    // 2. Release Handle individual chunks
-    // 3. Free contiguous virtual Address
-    // CRITICAL: We must attempt to execute all even if one fails to prevent catastrophic leaks.
+    // 1. Unmap
+    // 2. Release Handle
+    // 3. Free Address
+    // CRITICAL: We must attempt to execute all three even if one fails to prevent catastrophic leaks.
 
     hipError_t status;
 
-    for (const auto& chunk : meta.chunks) {
-        void* mapped_ptr = static_cast<char*>(ptr) + chunk.offset;
-        status = hipMemUnmap(mapped_ptr, chunk.size);
-        HIP_LOG_ERROR(status, "hipMemUnmap failed on slice");
+    status = hipMemUnmap(ptr, meta.padded_size);
+    HIP_LOG_ERROR(status, "hipMemUnmap failed");
 
-        status = hipMemRelease(chunk.handle);
-        HIP_LOG_ERROR(status, "hipMemRelease failed on slice");
-    }
+    status = hipMemRelease(meta.handle);
+    HIP_LOG_ERROR(status, "hipMemRelease failed");
 
     status = hipMemAddressFree(ptr, meta.padded_size);
     HIP_LOG_ERROR(status, "hipMemAddressFree failed");
