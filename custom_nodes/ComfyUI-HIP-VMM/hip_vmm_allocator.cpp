@@ -129,7 +129,9 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     // 4. Attempt Device Allocation
     if (g_vram_limit_bytes == 0 || (g_current_device_allocated + padded_size <= g_vram_limit_bytes)) {
         hipMemGenericAllocationHandle_t dev_handle;
-        status = hipMemCreate(&dev_handle, padded_size, &device_prop, 0);
+        // AMD ROCm Official Docs: hipMemCreate physical handle must be padded_size * 2
+        // to provide adequate internal page alignment slack, preventing unspecified launch failures
+        status = hipMemCreate(&dev_handle, padded_size * 2, &device_prop, 0);
         if (status == hipSuccess) {
             chunks.push_back({dev_handle, 0, padded_size});
         }
@@ -167,13 +169,14 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
             size_t current_slice = std::min(slice_size, padded_size - allocated_so_far);
             hipMemGenericAllocationHandle_t host_handle;
 
-            status = hipMemCreate(&host_handle, current_slice, &host_prop, 0);
+            // AMD ROCm Official Docs: physical handle must be slice * 2
+            status = hipMemCreate(&host_handle, current_slice * 2, &host_prop, 0);
 
             // If even 256MB fails, iteratively halve the slice size down to the max_granularity limit
             while (status != hipSuccess && current_slice > max_granularity) {
                 current_slice = std::max(current_slice / 2, max_granularity);
                 current_slice = ((current_slice + max_granularity - 1) / max_granularity) * max_granularity;
-                status = hipMemCreate(&host_handle, current_slice, &host_prop, 0);
+                status = hipMemCreate(&host_handle, current_slice * 2, &host_prop, 0);
             }
 
             if (status != hipSuccess) {
