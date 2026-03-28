@@ -124,9 +124,8 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
         // Exceeds VRAM limit natively, skip directly to fallback
         status = hipErrorOutOfMemory;
     } else {
-        // AMD ROCm Official Docs: hipMemCreate physical handle must be padded_size * 2
-        // to provide adequate internal page alignment slack, preventing unspecified launch failures
-        status = hipMemCreate(&handle, padded_size * 2, &device_prop, 0);
+        // Create native VRAM physical backing
+        status = hipMemCreate(&handle, padded_size, &device_prop, 0);
     }
 
     // 5. The Fallback (System RAM mapped to GPU Virtual Address)
@@ -144,18 +143,16 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
         }
 
         // Create the physical memory in Pinned System RAM using the precise Host VMM properties
-        // AMD ROCm Official Docs: physical handle must be padded_size * 2
-        status = hipMemCreate(&handle, padded_size * 2, &host_prop, 0);
+        status = hipMemCreate(&handle, padded_size, &host_prop, 0);
         if (status != hipSuccess) {
             std::cerr << "\n========================================\n";
             std::cerr << "[HIP VMM FATAL] Host memory allocation failed: " << hipGetErrorString(status) << "\n";
             std::cerr << "[HIP VMM DIAGNOSTIC] Attempted to lock a contiguous " << (padded_size / (1024.0 * 1024.0)) << " MB block in System RAM.\n";
             std::cerr << "[HIP VMM DIAGNOSTIC] Current VMM Host Tracker: " << (g_current_host_allocated / (1024.0 * 1024.0)) << " MB.\n";
             std::cerr << "--> WHY DID THIS CRASH?\n";
-            std::cerr << "Linux OS memory fragmentation prevents hipMemCreate from finding a perfect, physically unbroken block of this size in your DDR4.\n";
-            std::cerr << "Even if you have 30GB+ of RAM free, an OS that has been running for hours rarely has a perfectly contiguous multi-gigabyte segment remaining.\n";
-            std::cerr << "We cannot slice this allocation to bypass fragmentation because PyTorch Triton/MIOPEN kernels fatally crash on RDNA2 when accessing virtual addresses backed by disjointed physical handles.\n";
-            std::cerr << "SOLUTION: You must rely on PyTorch expandable_segments:True or native comfy_aimdo VRAM offloading to survive this specific payload.\n";
+            std::cerr << "This failure occurs when AMD's HIP driver is unable to allocate a single, massive, physically contiguous block of pinned memory. Consumer drivers (gfx1030) frequently reject allocations exceeding 2GB over the PCIe bus, regardless of free OS RAM.\n";
+            std::cerr << "Because RDNA2 lacks XNACK and XGMI, Triton/MIOPEN kernels fatally crash (unspecified launch failure) if we attempt to bypass this limit by slicing the allocation into smaller fragmented handles under a single virtual pointer.\n";
+            std::cerr << "SOLUTION: Hardware limitation reached. You must rely on native VRAM offloading (e.g. comfy_aimdo) for models exceeding this footprint.\n";
             std::cerr << "========================================\n" << std::endl;
 
             hipMemAddressFree(ptr, padded_size);
