@@ -1,6 +1,14 @@
 import os
 import ctypes
 
+# Universal any type so the node can accept any kind of link in ComfyUI
+class AnyType(str):
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+# instantiate
+any_typ = AnyType("*")
+
 class ComfyHIPVMMNode:
     """
     ComfyUI Node to configure the custom PyTorch Pluggable Memory Allocator
@@ -22,16 +30,21 @@ class ComfyHIPVMMNode:
                     "max": 262144, # 256GB
                     "step": 1024
                 }),
+            },
+            "optional": {
+                # A universal passthrough to force execution order in ComfyUI
+                "any_input": (any_typ, ),
             }
         }
 
-    RETURN_TYPES = ()
+    RETURN_TYPES = (any_typ,)
+    RETURN_NAMES = ("any_output",)
     FUNCTION = "apply_limits"
     CATEGORY = "advanced/memory"
-    # REQUIRED to force ComfyUI to actually run the node since it has no outputs
+    # Still an output node in case the user just drops it in the graph disconnected
     OUTPUT_NODE = True
 
-    def apply_limits(self, vram_limit_mb, ram_limit_mb):
+    def apply_limits(self, vram_limit_mb, ram_limit_mb, any_input=None):
         # We can dynamically grab the preloaded library from RTLD_GLOBAL
         so_path = os.path.join(os.path.dirname(__file__), 'hip_vmm_allocator.so')
         try:
@@ -40,7 +53,9 @@ class ComfyHIPVMMNode:
             lib.update_allocator_limits(vram_limit_mb, ram_limit_mb)
         except Exception as e:
             print(f"[HIP VMM WARNING] Cannot update limits. Make sure you compiled the library and set PYTORCH_CUDA_ALLOC_CONF. {e}")
-        return ()
+
+        # Return the input exactly as we received it to allow chaining
+        return (any_input,)
 
 # A dictionary that contains all nodes you want to export with their names
 NODE_CLASS_MAPPINGS = {

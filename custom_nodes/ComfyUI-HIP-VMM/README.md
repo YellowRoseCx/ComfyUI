@@ -16,13 +16,14 @@ This will generate `hip_vmm_allocator.so`.
 ## CRITICAL: How to Launch ComfyUI
 Because PyTorch locks its memory allocator extremely early in the boot cycle, you **cannot** inject custom allocators purely from Python inside a ComfyUI custom node without throwing a `RuntimeError`.
 
-To use this feature, you must explicitly instruct PyTorch to use the allocator via environment variables **before** starting ComfyUI. The path must be absolute to ensure `dlopen` correctly loads it:
+The native PyTorch `PYTORCH_CUDA_ALLOC_CONF` environment variable string parser does not cleanly support `backend:pluggable` natively without crashing in `torch.cuda.memory`. Therefore, you must use the provided wrapper script to inject the allocator instantly *before* ComfyUI loads any deep PyTorch context.
+
+From the root ComfyUI directory, run:
 
 ```bash
-# Example assuming you launch from the root of the ComfyUI repository
-export PYTORCH_CUDA_ALLOC_CONF="backend:pluggable,allocator:$PWD/custom_nodes/ComfyUI-HIP-VMM/hip_vmm_allocator.so"
-python main.py
+python launch_vmm.py
 ```
+This script acts exactly like `main.py` but intercepts the CUDA context to install the HIP VMM APIs cleanly.
 
 ## Usage
 Add the **HIP VMM Allocator Limits** node to your ComfyUI workflow. Connect its inputs to set the `vram_limit_mb` and `ram_limit_mb`. Because it has no graphical outputs, ensure it runs at least once by having it trigger on a required step. The limits update dynamically.

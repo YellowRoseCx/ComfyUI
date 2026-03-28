@@ -32,6 +32,7 @@ struct AllocationMeta {
     size_t padded_size;
     hipMemGenericAllocationHandle_t handle;
     bool is_host_fallback;
+    bool used_unified_memory;
 };
 
 // Map original returned pointer to allocation metadata
@@ -66,6 +67,11 @@ void update_allocator_limits(size_t vram_mb, size_t ram_mb) {
 void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     if (size <= 0) return nullptr;
 
+    static std::atomic<bool> g_first_alloc(true);
+    if (g_first_alloc.exchange(false)) {
+        std::cout << "[HIP VMM] Verified: Custom my_malloc intercept successfully reached." << std::endl;
+    }
+
     // 1. Get Allocation Granularity for ROCm 7.x
     hipMemAllocationProp prop = {};
     prop.type = hipMemAllocationTypePinned;
@@ -83,77 +89,76 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     // 2. Pad size mathematically
     size_t padded_size = ((size + granularity - 1) / granularity) * granularity;
 
-    // 3. Reserve Virtual Address Space
     void* ptr = nullptr;
-    HIP_CHECK(hipMemAddressReserve(&ptr, padded_size, 0, nullptr, 0));
-
-    hipMemGenericAllocationHandle_t handle;
+    hipMemGenericAllocationHandle_t handle = {};
     bool is_host_fallback = false;
+    bool used_unified_memory = false;
 
-    // 4. Attempt Device Allocation
+    // 3. Check VRAM Limits
     if (g_vram_limit_bytes > 0 && (g_current_device_allocated + padded_size > g_vram_limit_bytes)) {
-        // Exceeds VRAM limit natively, skip directly to fallback
+        // Exceeds VRAM limit naturally, skip VMM and directly use Unified Memory Fallback
         status = hipErrorOutOfMemory;
     } else {
-        status = hipMemCreate(&handle, padded_size, &prop, 0);
+        // Attempt Native VMM Device Allocation
+        status = hipMemAddressReserve(&ptr, padded_size, 0, nullptr, 0);
+        if (status == hipSuccess) {
+            status = hipMemCreate(&handle, padded_size, &prop, 0);
+
+            if (status == hipSuccess) {
+                // Map Physical Memory to Virtual Address
+                status = hipMemMap(ptr, padded_size, 0, handle, 0);
+                if (status == hipSuccess) {
+                    // Grant Access
+                    hipMemAccessDesc accessDesc = {};
+                    accessDesc.location.type = hipMemLocationTypeDevice;
+                    accessDesc.location.id = device;
+                    accessDesc.flags = hipMemAccessFlagsProtReadWrite;
+
+                    status = hipMemSetAccess(ptr, padded_size, &accessDesc, 1);
+                    if (status != hipSuccess) {
+                        hipMemUnmap(ptr, padded_size);
+                        hipMemRelease(handle);
+                        hipMemAddressFree(ptr, padded_size);
+                    }
+                } else {
+                    hipMemRelease(handle);
+                    hipMemAddressFree(ptr, padded_size);
+                }
+            } else {
+                hipMemAddressFree(ptr, padded_size);
+            }
+        }
     }
 
-    // 5. The Fallback (System RAM)
+    // 4. The Fallback (Unified Memory System RAM)
     if (status != hipSuccess) {
         if (!g_fallback_active.exchange(true)) {
-             std::cout << "[HIP VMM WARN] VRAM limit reached, falling back to Host RAM over PCIe" << std::endl;
+             std::cout << "[HIP VMM WARN] VRAM limit reached or VMM allocation failed, falling back to Unified Memory (Host RAM over PCIe)" << std::endl;
         }
-
-        // Switch location to Host
-        prop.location.type = hipMemLocationTypeHost;
-        // Host id is typically 0, but can just let it be since it's Host
-        prop.location.id = 0;
 
         // Verify Host allocation doesn't exceed RAM limit
         if (g_ram_limit_bytes > 0 && (g_current_host_allocated + padded_size > g_ram_limit_bytes)) {
             std::cerr << "[HIP VMM ERROR] Host RAM limit exceeded! Attempted to allocate " << padded_size << " bytes." << std::endl;
-            hipMemAddressFree(ptr, padded_size);
             return nullptr;
         }
 
-        status = hipMemCreate(&handle, padded_size, &prop, 0);
+        // Use standard Managed Memory which dynamically pages to CPU DDR4/DDR5
+        // without fighting the VMM pinned-memory size constraints of the HSA driver
+        status = hipMallocManaged(&ptr, padded_size, hipMemAttachGlobal);
         if (status != hipSuccess) {
-            std::cerr << "[HIP VMM FATAL] Host memory allocation failed: " << hipGetErrorString(status) << std::endl;
-            hipMemAddressFree(ptr, padded_size);
+            std::cerr << "[HIP VMM FATAL] Unified Memory (Host) allocation failed: " << hipGetErrorString(status) << std::endl;
+            std::cerr << "[HIP VMM HINT] This is often caused by the OS out of physical RAM and swap space." << std::endl;
             return nullptr;
         }
+
         is_host_fallback = true;
+        used_unified_memory = true;
     } else {
         // Device allocation succeeded, we are not in fallback for this allocation
         if (g_fallback_active.load() && g_current_device_allocated == 0) {
             // Optional: reset fallback log when memory drops
             g_fallback_active.store(false);
         }
-    }
-
-    // 6. Map Physical Memory to Virtual Address
-    status = hipMemMap(ptr, padded_size, 0, handle, 0);
-    if (status != hipSuccess) {
-        std::cerr << "[HIP VMM ERROR] hipMemMap failed: " << hipGetErrorString(status) << std::endl;
-        hipMemRelease(handle);
-        hipMemAddressFree(ptr, padded_size);
-        return nullptr;
-    }
-
-    // 7. Grant Access
-    hipMemAccessDesc accessDesc = {};
-    accessDesc.location.type = hipMemLocationTypeDevice;
-    accessDesc.location.id = device;
-    accessDesc.flags = hipMemAccessFlagsProtReadWrite;
-
-    status = hipMemSetAccess(ptr, padded_size, &accessDesc, 1);
-    if (status != hipSuccess) {
-        std::cerr << "[HIP VMM ERROR] hipMemSetAccess failed: " << hipGetErrorString(status) << std::endl;
-        // Clean up
-        hipMemUnmap(ptr, padded_size);
-        hipMemRelease(handle);
-        hipMemAddressFree(ptr, padded_size);
-        return nullptr;
     }
 
     // Update Trackers
@@ -166,7 +171,7 @@ void* my_malloc(ssize_t size, int device, cudaStream_t stream) {
     // Save metadata
     {
         std::lock_guard<std::mutex> lock(g_alloc_mutex);
-        g_allocations[ptr] = {padded_size, handle, is_host_fallback};
+        g_allocations[ptr] = {padded_size, handle, is_host_fallback, used_unified_memory};
     }
 
     return ptr;
@@ -202,21 +207,28 @@ void my_free(void* ptr, ssize_t size, int device, cudaStream_t stream) {
         }
     }
 
-    // Cleanup strict order:
-    // 1. Unmap
-    // 2. Release Handle
-    // 3. Free Address
-    // CRITICAL: We must attempt to execute all three even if one fails to prevent catastrophic leaks.
+    // Cleanup strict order based on allocation type:
     hipError_t status;
+    if (meta.used_unified_memory) {
+        // Simple free for hipMallocManaged
+        status = hipFree(ptr);
+        HIP_LOG_ERROR(status, "hipFree failed on Unified Memory");
+    } else {
+        // VMM Cleanup strict order:
+        // 1. Unmap
+        // 2. Release Handle
+        // 3. Free Address
+        // CRITICAL: We must attempt to execute all three even if one fails to prevent catastrophic leaks.
 
-    status = hipMemUnmap(ptr, meta.padded_size);
-    HIP_LOG_ERROR(status, "hipMemUnmap failed");
+        status = hipMemUnmap(ptr, meta.padded_size);
+        HIP_LOG_ERROR(status, "hipMemUnmap failed");
 
-    status = hipMemRelease(meta.handle);
-    HIP_LOG_ERROR(status, "hipMemRelease failed");
+        status = hipMemRelease(meta.handle);
+        HIP_LOG_ERROR(status, "hipMemRelease failed");
 
-    status = hipMemAddressFree(ptr, meta.padded_size);
-    HIP_LOG_ERROR(status, "hipMemAddressFree failed");
+        status = hipMemAddressFree(ptr, meta.padded_size);
+        HIP_LOG_ERROR(status, "hipMemAddressFree failed");
+    }
 }
 
 } // extern "C"
