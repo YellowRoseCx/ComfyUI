@@ -84,7 +84,7 @@ class BOFTAdapter(WeightAdapterBase):
                     normed_q = q * alpha / q_norm
             # use float() to prevent unsupported type in .inverse()
             r = (I + normed_q) @ (I - normed_q).float().inverse()
-            r = r.to(weight)
+            r = r.to(dtype=weight.dtype, device=weight.device)
             inp = org = weight
 
             r_b = boft_b // 2

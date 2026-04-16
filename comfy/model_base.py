@@ -1209,7 +1209,7 @@ class Anima(BaseModel):
         if cross_attn is not None:
             if t5xxl_ids is not None:
                 if t5xxl_weights is not None:
-                    t5xxl_weights = t5xxl_weights.unsqueeze(0).unsqueeze(-1).to(cross_attn)
+                    t5xxl_weights = t5xxl_weights.unsqueeze(0).unsqueeze(-1).to(dtype=cross_attn.dtype, device=cross_attn.device)
                 t5xxl_ids = t5xxl_ids.unsqueeze(0)
 
                 if torch.is_inference_mode_enabled():  # if not we are training
@@ -1702,7 +1702,7 @@ class ACEStep15(BaseModel):
 
         if refer_audio.shape[2] < noise.shape[2]:
             pad = comfy.ldm.ace.ace_step15.get_silence_latent(noise.shape[2], device)
-            refer_audio = torch.cat([refer_audio.to(pad), pad[:, :, refer_audio.shape[2]:]], dim=2)
+            refer_audio = torch.cat([refer_audio.to(dtype=pad.dtype, device=pad.device), pad[:, :, refer_audio.shape[2]:]], dim=2)
 
         out['refer_audio'] = comfy.conds.CONDRegular(refer_audio)
         return out

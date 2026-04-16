@@ -82,7 +82,7 @@ def compute_mixed_rotation(
         freqs_sin: [N, num_heads, num_freqs] - sine components
     """
     assert freqs.ndim == 3
-    freqs_sum = torch.einsum("Nd,dhf->Nhf", pos.to(freqs), freqs)
+    freqs_sum = torch.einsum("Nd,dhf->Nhf", pos.to(dtype=freqs.dtype, device=freqs.device), freqs)
     freqs_cos = torch.cos(freqs_sum)
     freqs_sin = torch.sin(freqs_sum)
     return freqs_cos, freqs_sin

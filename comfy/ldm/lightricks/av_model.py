@@ -706,7 +706,7 @@ class LTXAVModel(LTXVModel):
             additional_args["ref_audio_seq_len"] = ref_audio_seq_len
             additional_args["target_audio_seq_len"] = ax.shape[1]
             ax = torch.cat([ref_tokens, ax], dim=1)
-            a_latent_coords = torch.cat([ref_pos.to(a_latent_coords), a_latent_coords], dim=2)
+            a_latent_coords = torch.cat([ref_pos.to(dtype=a_latent_coords.dtype, device=a_latent_coords.device), a_latent_coords], dim=2)
 
         ax = self.audio_patchify_proj(ax)
 

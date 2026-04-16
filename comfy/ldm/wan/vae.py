@@ -61,7 +61,7 @@ class RMS_norm(nn.Module):
 
     def forward(self, x):
         return F.normalize(
-            x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma.to(x) + (self.bias.to(x) if self.bias is not None else 0)
+            x, dim=(1 if self.channel_first else -1)) * self.scale * self.gamma.to(dtype=x.dtype, device=x.device) + (self.bias.to(dtype=x.dtype, device=x.device) if self.bias is not None else 0)
 
 
 class Resample(nn.Module):

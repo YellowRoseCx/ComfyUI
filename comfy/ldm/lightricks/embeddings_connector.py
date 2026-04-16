@@ -278,7 +278,7 @@ class Embeddings1DConnector(nn.Module):
                 max(1024, hidden_states.shape[1]) / self.num_learnable_registers
             )
             learnable_registers = torch.tile(
-                self.learnable_registers.to(hidden_states), (num_registers_duplications, 1)
+                self.learnable_registers.to(dtype=hidden_states.dtype, device=hidden_states.device), (num_registers_duplications, 1)
             )
 
             hidden_states = torch.cat((hidden_states, learnable_registers[hidden_states.shape[1]:].unsqueeze(0).repeat(hidden_states.shape[0], 1, 1)), dim=1)

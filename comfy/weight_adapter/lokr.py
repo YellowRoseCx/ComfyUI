@@ -86,7 +86,7 @@ class LokrDiff(WeightAdapterTrainBase):
         for _ in range(w2.dim() - w1.dim()):
             w1 = w1.unsqueeze(-1)
         diff = torch.kron(w1, w2)
-        return w + diff.reshape(w.shape).to(w)
+        return w + diff.reshape(w.shape).to(dtype=w.dtype, device=w.device)
 
     def h(self, x: torch.Tensor, base_out: torch.Tensor) -> torch.Tensor:
         """

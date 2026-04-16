@@ -15,7 +15,8 @@ def clip_preprocess(image, size=224, mean=[0.48145466, 0.4578275, 0.40821073], s
         else:
             scale_size = (size, size)
 
-        image = torch.nn.functional.interpolate(image, size=scale_size, mode="bicubic", antialias=True)
+        temp_dtype = image.dtype
+        image = torch.nn.functional.interpolate(image.to(torch.float32), size=scale_size, mode="bicubic", antialias=True).to(temp_dtype)
         h = (image.shape[2] - size)//2
         w = (image.shape[3] - size)//2
         image = image[:,:,h:h+size,w:w+size]

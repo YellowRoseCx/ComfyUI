@@ -811,10 +811,10 @@ class processor(nn.Module):
         self.register_buffer("mean-of-means", torch.empty(128))
 
     def un_normalize(self, x):
-        return (x * self.get_buffer("std-of-means").to(x)) + self.get_buffer("mean-of-means").to(x)
+        return (x * self.get_buffer("std-of-means").to(dtype=x.dtype, device=x.device)) + self.get_buffer("mean-of-means").to(dtype=x.dtype, device=x.device)
 
     def normalize(self, x):
-        return (x - self.get_buffer("mean-of-means").to(x)) / self.get_buffer("std-of-means").to(x)
+        return (x - self.get_buffer("mean-of-means").to(dtype=x.dtype, device=x.device)) / self.get_buffer("std-of-means").to(dtype=x.dtype, device=x.device)
 
 
 class CausalAudioAutoencoder(nn.Module):

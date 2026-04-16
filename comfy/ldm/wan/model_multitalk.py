@@ -56,7 +56,7 @@ def get_attn_map_with_target(visual_q, ref_k, shape, ref_target_masks=None, spli
     ref_k     = ref_k[:, :x_seqlens]
     _, seq_lens, heads, _ = visual_q.shape
     class_num, _ = ref_target_masks.shape
-    x_ref_attn_maps = torch.zeros(class_num, seq_lens).to(visual_q)
+    x_ref_attn_maps = torch.zeros(class_num, seq_lens).to(dtype=visual_q.dtype, device=visual_q.device)
 
     split_chunk = heads // split_num
 
@@ -461,7 +461,7 @@ class MultiTalkApplyModelWrapper:
         self.init_latents = init_latents
 
     def __call__(self, executor, x, *args, **kwargs):
-        x[:, :, :self.init_latents.shape[2]] = self.init_latents.to(x)
+        x[:, :, :self.init_latents.shape[2]] = self.init_latents.to(dtype=x.dtype, device=x.device)
         samples = executor(x, *args, **kwargs)
         return samples
 
@@ -489,7 +489,7 @@ class InfiniteTalkOuterSampleWrapper:
         # insert motion frames before decoding
         if self.is_extend:
             overlap = self.motion_frames_latent.shape[2]
-            result = torch.cat([self.motion_frames_latent.to(result), result[:, :, overlap:]], dim=2)
+            result = torch.cat([self.motion_frames_latent.to(dtype=result.dtype, device=result.device), result[:, :, overlap:]], dim=2)
 
         return result
 

@@ -44,7 +44,7 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     if dim % 2:
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     if torch.is_floating_point(t):
-        embedding = embedding.to(t)
+        embedding = embedding.to(dtype=t.dtype, device=t.device)
     return embedding
 
 class MLPEmbedder(nn.Module):
@@ -97,7 +97,7 @@ class QKNorm(torch.nn.Module):
     def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple:
         q = self.query_norm(q)
         k = self.key_norm(k)
-        return q.to(v), k.to(v)
+        return q.to(dtype=v.dtype, device=v.device), k.to(dtype=v.dtype, device=v.device)
 
 
 class SelfAttention(nn.Module):

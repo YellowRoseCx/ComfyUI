@@ -79,7 +79,7 @@ def normal_kl(mean1, logvar1, mean2, logvar2):
     # Force variances to be Tensors. Broadcasting helps convert scalars to
     # Tensors, but it does not work for torch.exp().
     logvar1, logvar2 = [
-        x if isinstance(x, torch.Tensor) else torch.tensor(x).to(tensor)
+        x if isinstance(x, torch.Tensor) else torch.tensor(x).to(dtype=tensor.dtype, device=tensor.device)
         for x in (logvar1, logvar2)
     ]
 

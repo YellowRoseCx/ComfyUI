@@ -193,8 +193,8 @@ class FaceBlock(nn.Module):
         q = rearrange(q, "B S (H D) -> B S H D", H=self.heads_num)
 
         # Apply QK-Norm if needed.
-        q = self.q_norm(q).to(v)
-        k = self.k_norm(k).to(v)
+        q = self.q_norm(q).to(dtype=v.dtype, device=v.device)
+        k = self.k_norm(k).to(dtype=v.dtype, device=v.device)
 
         k = rearrange(k, "B L N H D -> (B L) N H D")
         v = rearrange(v, "B L N H D -> (B L) N H D")

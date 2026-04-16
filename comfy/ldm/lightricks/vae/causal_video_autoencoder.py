@@ -1144,10 +1144,10 @@ class processor(nn.Module):
         self.register_buffer("mean-of-means", torch.empty(128))
 
     def un_normalize(self, x):
-        return (x * self.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(x)) + self.get_buffer("mean-of-means").view(1, -1, 1, 1, 1).to(x)
+        return (x * self.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(dtype=x.dtype, device=x.device)) + self.get_buffer("mean-of-means").view(1, -1, 1, 1, 1).to(dtype=x.dtype, device=x.device)
 
     def normalize(self, x):
-        return (x - self.get_buffer("mean-of-means").view(1, -1, 1, 1, 1).to(x)) / self.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(x)
+        return (x - self.get_buffer("mean-of-means").view(1, -1, 1, 1, 1).to(dtype=x.dtype, device=x.device)) / self.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(dtype=x.dtype, device=x.device)
 
 class VideoVAE(nn.Module):
     comfy_has_chunked_io = True

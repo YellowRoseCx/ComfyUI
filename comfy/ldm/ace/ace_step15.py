@@ -1141,7 +1141,7 @@ class AceStepConditionGenerationModel(nn.Module):
         )
 
         if replace_with_null_embeds:
-            enc_hidden[:] = self.null_condition_emb.to(enc_hidden)
+            enc_hidden[:] = self.null_condition_emb.to(dtype=enc_hidden.dtype, device=enc_hidden.device)
 
         out = self.decoder(hidden_states=x,
                            timestep=timestep,

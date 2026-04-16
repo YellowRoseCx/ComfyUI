@@ -226,7 +226,7 @@ class OFTAdapter(WeightAdapterBase):
                     normed_q = q * alpha / q_norm
             # use float() to prevent unsupported type in .inverse()
             r = (I + normed_q) @ (I - normed_q).float().inverse()
-            r = r.to(weight)
+            r = r.to(dtype=weight.dtype, device=weight.device)
             # Create I in weight's dtype for the einsum
             I_w = torch.eye(block_size, device=weight.device, dtype=weight.dtype)
             _, *shape = weight.shape

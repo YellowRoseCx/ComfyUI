@@ -811,7 +811,7 @@ class BaseGenerate:
         if module.comfy_cast_weights:
             weight, _, offload_stream = comfy.ops.cast_bias_weight(module, input, offloadable=True)
         else:
-            weight = self.model.embed_tokens.weight.to(x)
+            weight = self.model.embed_tokens.weight.to(dtype=x.dtype, device=x.device)
 
         x = torch.nn.functional.linear(input, weight, None)
 
@@ -921,7 +921,7 @@ class BaseQwen3:
         if module.comfy_cast_weights:
             weight, _, offload_stream = comfy.ops.cast_bias_weight(module, input, offloadable=True)
         else:
-            weight = self.model.embed_tokens.weight.to(x)
+            weight = self.model.embed_tokens.weight.to(dtype=x.dtype, device=x.device)
 
         x = torch.nn.functional.linear(input, weight, None)
 

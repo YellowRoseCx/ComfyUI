@@ -131,7 +131,7 @@ class LohaDiff(WeightAdapterTrainBase):
             )
 
         # Add the scaled difference to the original weight
-        weight = w.to(diff_weight) + diff_weight.reshape(w.shape)
+        weight = w.to(dtype=diff_weight.dtype, device=diff_weight.device) + diff_weight.reshape(w.shape)
 
         return weight.to(org_dtype)
 
